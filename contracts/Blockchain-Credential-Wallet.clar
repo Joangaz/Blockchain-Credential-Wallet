@@ -8,6 +8,7 @@
 (define-constant err-invalid-recipient (err u104))
 (define-constant err-credential-revoked (err u105))
 (define-constant err-issuer-not-found (err u106))
+(define-constant err-credential-expired (err u107))
 
 (define-data-var next-credential-id uint u1)
 (define-data-var next-issuer-id uint u1)
@@ -37,7 +38,8 @@
     description: (string-ascii 500),
     metadata: (string-ascii 1000),
     issued-at: uint,
-    is-revoked: bool
+    is-revoked: bool,
+    expires-at: (optional uint)
   }
 )
 
@@ -122,7 +124,8 @@
                 description: description,
                 metadata: metadata,
                 issued-at: stacks-block-height,
-                is-revoked: false
+                is-revoked: false,
+                expires-at: none
               }
             )
             (map-set recipient-credentials
@@ -212,6 +215,10 @@
     credential-data
     (and
       (not (get is-revoked credential-data))
+      (match (get expires-at credential-data)
+        expiry-block (>= expiry-block stacks-block-height)
+        true
+      )
       (match (map-get? authorized-issuers { issuer-id: (get issuer-id credential-data) })
         issuer-data (get is-active issuer-data)
         false
@@ -239,4 +246,42 @@
 
 (define-read-only (get-contract-owner)
   contract-owner
+)
+
+(define-public (set-credential-expiration (credential-id uint) (expiry-block uint))
+  (match (map-get? credentials { credential-id: credential-id })
+    credential-data
+    (match (map-get? issuer-by-address { issuer-address: tx-sender })
+      issuer-data
+      (let ((issuer-id (get issuer-id issuer-data)))
+        (asserts! (is-eq issuer-id (get issuer-id credential-data)) err-not-authorized-issuer)
+        (asserts! (> expiry-block stacks-block-height) err-credential-expired)
+        (map-set credentials
+          { credential-id: credential-id }
+          (merge credential-data { expires-at: (some expiry-block) })
+        )
+        (ok true)
+      )
+      err-not-authorized-issuer
+    )
+    err-credential-not-found
+  )
+)
+
+(define-read-only (is-credential-expired (credential-id uint))
+  (match (map-get? credentials { credential-id: credential-id })
+    credential-data
+    (match (get expires-at credential-data)
+      expiry-block (< expiry-block stacks-block-height)
+      false
+    )
+    false
+  )
+)
+
+(define-read-only (get-credential-expiration (credential-id uint))
+  (match (map-get? credentials { credential-id: credential-id })
+    credential-data (get expires-at credential-data)
+    none
+  )
 )
